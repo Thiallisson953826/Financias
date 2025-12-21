@@ -40,7 +40,6 @@ def carregar_dados(mes):
             return df
         except:
             pass
-
     return pd.DataFrame(columns=["Data", "Tipo", "Referente", "Valor"])
 
 df = carregar_dados(mes_ano)
@@ -72,7 +71,7 @@ if st.button("💾 Salvar movimentação"):
 
     df = pd.concat([df, novo], ignore_index=True)
 
-    # 🔥 SALVAMENTO CORRETO (SEM ERRO)
+    # Salvamento correto no Excel
     if os.path.exists(ARQUIVO):
         with pd.ExcelWriter(
             ARQUIVO,
@@ -140,3 +139,21 @@ st.divider()
 # ===============================
 st.subheader("📄 Detalhamento das movimentações")
 st.dataframe(df, use_container_width=True)
+
+st.divider()
+
+# ===============================
+# Download do Excel
+# ===============================
+st.subheader("📥 Exportar planilha")
+
+if os.path.exists(ARQUIVO):
+    with open(ARQUIVO, "rb") as file:
+        st.download_button(
+            label="📊 Baixar Excel",
+            data=file,
+            file_name="organizador_financeiro.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+else:
+    st.info("Nenhuma planilha disponível para download.")
