@@ -25,7 +25,7 @@ if "user" not in st.session_state:
 
 user = st.session_state.user
 
-# ================= CARREGAR DADOS (CORRIGIDO) =================
+# ================= DADOS =================
 def carregar():
     resp = supabase.table("financeiro").select("*").eq("usuario", user).execute()
 
@@ -36,7 +36,6 @@ def carregar():
 
     df = pd.DataFrame(resp.data)
 
-    # garante que todas as colunas existam (evita KeyError)
     for c in colunas:
         if c not in df.columns:
             df[c] = None
@@ -48,9 +47,16 @@ def carregar():
 
 df = carregar()
 
-# ================= FILTRO MÊS + ANO =================
-st.sidebar.subheader("📅 Filtro")
+# ================= SIDEBAR (CONTROLE TOTAL) =================
+st.sidebar.title("⚙️ Controle")
 
+# Filtro tipo
+filtro_tipo = st.sidebar.radio(
+    "Visualizar",
+    ["Todos", "Entradas", "Saídas"]
+)
+
+# Filtro mês/ano
 if not df.empty:
     df["ano"] = df["data"].dt.year
     df["mes_num"] = df["data"].dt.month
@@ -69,7 +75,46 @@ if not df.empty:
 
     df = df[(df["ano"] == ano_sel) & (df["mes_num"] == mes_num_sel)]
 
-# ================= KPIs =================
+# filtro tipo aplicado
+if filtro_tipo == "Entradas":
+    df = df[df["tipo"] == "Entrada"]
+elif filtro_tipo == "Saídas":
+    df = df[df["tipo"] == "Saída"]
+
+# ================= FORMULÁRIO SIDEBAR =================
+st.sidebar.divider()
+st.sidebar.subheader("➕ Nova Movimentação")
+
+tipo = st.sidebar.selectbox("Tipo", ["Entrada", "Saída"])
+data = st.sidebar.date_input("Data", date.today())
+referente = st.sidebar.text_input("Referência")
+valor = st.sidebar.number_input("Valor", min_value=0.0, step=0.01)
+
+categoria = None
+if tipo == "Saída":
+    categoria = st.sidebar.selectbox(
+        "Categoria",
+        ["Alimentação", "Transporte", "Casa", "Lazer", "Outros"]
+    )
+
+    if categoria == "Outros":
+        categoria = st.sidebar.text_input("Digite a categoria")
+
+if st.sidebar.button("Salvar"):
+    supabase.table("financeiro").insert({
+        "usuario": user,
+        "data": data.isoformat(),
+        "tipo": tipo,
+        "referente": referente,
+        "valor": float(valor),
+        "categoria": categoria,
+        "mes": data.strftime("%Y-%m")
+    }).execute()
+
+    st.sidebar.success("Salvo!")
+    st.rerun()
+
+# ================= DASHBOARD =================
 st.markdown("## 💳 Dashboard Financeiro")
 
 entradas = df[df["tipo"] == "Entrada"]["valor"].sum()
@@ -84,99 +129,30 @@ c3.metric("💜 Saldo", f"R$ {saldo:,.2f}")
 
 st.divider()
 
-# ================= METAS =================
-st.subheader("🎯 Metas por Categoria")
-
-categorias = ["Alimentação", "Transporte", "Casa", "Lazer"]
-
-meta_categoria = {}
-for c in categorias:
-    meta_categoria[c] = st.slider(f"Meta {c}", 0, 5000, 1000)
-
+# ================= GRÁFICOS =================
 if not df.empty:
-    gastos_cat = df[df["tipo"] == "Saída"].groupby("categoria")["valor"].sum().reset_index()
+    st.subheader("📊 Categorias")
 
-    for c in categorias:
-        gasto = gastos_cat[gastos_cat["categoria"] == c]["valor"].sum()
-        st.write(f"**{c}**: R$ {gasto:.2f} / Meta {meta_categoria[c]}")
+    cat = df[df["tipo"] == "Saída"].groupby("categoria")["valor"].sum().reset_index()
 
-st.divider()
+    st.plotly_chart(px.pie(cat, names="categoria", values="valor"), use_container_width=True)
 
-# ================= EVOLUÇÃO =================
-st.subheader("📈 Evolução")
+    st.subheader("📈 Evolução")
 
-if not df.empty:
     mensal = df.copy()
     mensal["mes"] = mensal["data"].dt.strftime("%Y-%m")
 
     evolucao = mensal.groupby(["mes", "tipo"])["valor"].sum().reset_index()
 
-    fig = px.line(
-        evolucao,
-        x="mes",
-        y="valor",
-        color="tipo",
-        markers=True
+    st.plotly_chart(
+        px.line(evolucao, x="mes", y="valor", color="tipo", markers=True),
+        use_container_width=True
     )
-    st.plotly_chart(fig, use_container_width=True)
 
-st.divider()
-
-# ================= CATEGORIAS =================
-st.subheader("📊 Gastos por Categoria")
-
-if not df.empty:
-    cat = df[df["tipo"]=="Saída"].groupby("categoria")["valor"].sum().reset_index()
-
-    fig2 = px.pie(cat, names="categoria", values="valor")
-    st.plotly_chart(fig2)
-
-st.divider()
-
-# ================= FORMULÁRIO =================
-st.subheader("➕ Nova Movimentação")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    tipo = st.selectbox("Tipo", ["Entrada", "Saída"])
-    data = st.date_input("Data", date.today())
-
-    categoria = None
-    if tipo == "Saída":
-        categoria = st.selectbox(
-            "Categoria",
-            ["Alimentação", "Transporte", "Casa", "Lazer", "Outros"]
-        )
-
-        if categoria == "Outros":
-            categoria = st.text_input("Digite a categoria")
-
-with col2:
-    referente = st.text_input("Referência")
-    valor = st.number_input("Valor", min_value=0.0, step=0.01)
-
-if st.button("Salvar"):
-    supabase.table("financeiro").insert({
-        "usuario": user,
-        "data": data.isoformat(),
-        "tipo": tipo,
-        "referente": referente,
-        "valor": float(valor),
-        "categoria": categoria,
-        "mes": data.strftime("%Y-%m")
-    }).execute()
-
-    st.success("Salvo com sucesso!")
-    st.rerun()
-
-st.divider()
-
-# ================= HISTÓRICO =================
+# ================= TABELA =================
 st.subheader("📋 Histórico")
 
 if not df.empty:
     view = df.copy()
     view["data"] = view["data"].dt.strftime("%d/%m/%Y")
-
     st.dataframe(view, use_container_width=True)
