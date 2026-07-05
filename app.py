@@ -10,7 +10,7 @@ SUPABASE_URL = "https://nwloxhyzvijnimmtevry.supabase.co"
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ================= LOGIN SIMPLES =================
+# ================= LOGIN =================
 if "user" not in st.session_state:
     st.title("🔐 Acesso ao Sistema")
     user = st.text_input("Digite seu nome")
@@ -23,11 +23,7 @@ if "user" not in st.session_state:
     st.stop()
 
 user = st.session_state.user
-
 st.sidebar.success(f"Usuário: {user}")
-
-# ================= METAS =================
-meta = st.sidebar.number_input("Meta mensal de gastos (R$)", value=1000.0)
 
 # ================= CARREGAR DADOS =================
 def carregar_dados():
@@ -45,30 +41,35 @@ def carregar_dados():
 
 df = carregar_dados()
 
+# ================= GASTO DO MÊS (AUTOMÁTICO) =================
+gasto_mes = df[df["tipo"] == "Saída"]["valor"].sum()
+
 # ================= KPIs =================
 st.title("📊 Dashboard Financeiro")
 
 entradas = df[df["tipo"] == "Entrada"]["valor"].sum()
-saidas = df[df["tipo"] == "Saída"]["valor"].sum()
+saidas = gasto_mes
 saldo = entradas - saidas
 
 col1, col2, col3 = st.columns(3)
 
 col1.metric("💰 Entradas", f"R$ {entradas:,.2f}")
-col2.metric("💸 Saídas", f"R$ {saidas:,.2f}")
+col2.metric("💸 Gasto do mês", f"R$ {gasto_mes:,.2f}")
 col3.metric("📌 Saldo", f"R$ {saldo:,.2f}")
 
 # ================= ALERTAS =================
 st.divider()
 
-if saidas > meta:
-    st.error("⚠️ Você ultrapassou sua meta mensal!")
-elif saidas > meta * 0.8:
-    st.warning("⚠️ Você já usou mais de 80% da sua meta")
-else:
-    st.success("✔️ Dentro da meta mensal")
+limite = 1000  # limite fixo (depois posso deixar por usuário)
 
-st.progress(min(saidas / meta, 1.0))
+if gasto_mes > limite:
+    st.error("⚠️ Você ultrapassou o limite de gastos do mês!")
+elif gasto_mes > limite * 0.8:
+    st.warning("⚠️ Você já usou mais de 80% do limite")
+else:
+    st.success("✔️ Dentro do limite mensal")
+
+st.progress(min(gasto_mes / limite, 1.0))
 
 # ================= FORMULÁRIO =================
 st.subheader("➕ Nova movimentação")
@@ -78,7 +79,16 @@ col1, col2 = st.columns(2)
 with col1:
     tipo = st.selectbox("Tipo", ["Entrada", "Saída"])
     data_mov = st.date_input("Data", date.today())
-    categoria = st.selectbox("Categoria", ["Alimentação", "Transporte", "Casa", "Lazer", "Outros"])
+
+    categoria_padrao = st.selectbox(
+        "Categoria",
+        ["Alimentação", "Transporte", "Casa", "Lazer", "Outros"]
+    )
+
+    if categoria_padrao == "Outros":
+        categoria = st.text_input("Digite a categoria")
+    else:
+        categoria = categoria_padrao
 
 with col2:
     referente = st.text_input("Referente")
@@ -98,9 +108,7 @@ if st.button("Salvar"):
     st.success("Salvo com sucesso!")
     st.rerun()
 
-st.divider()
-
-# ================= FILTRO MÊS =================
+# ================= FILTRO =================
 if not df.empty:
     meses = sorted(df["mes"].dropna().unique())
     mes_sel = st.selectbox("Filtrar mês", ["Todos"] + meses)
