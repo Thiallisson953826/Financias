@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 from datetime import date
 from supabase import create_client
 
@@ -12,7 +13,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ================= LOGIN =================
 if "user" not in st.session_state:
-    st.title("🔐 Acesso")
+    st.title("🔐 Acesso ao Sistema")
     user = st.text_input("Digite seu nome")
     if st.button("Entrar"):
         if user.strip():
@@ -24,114 +25,158 @@ if "user" not in st.session_state:
 
 user = st.session_state.user
 
-# ================= DADOS =================
+# ================= CARREGAR DADOS (CORRIGIDO) =================
 def carregar():
     resp = supabase.table("financeiro").select("*").eq("usuario", user).execute()
 
+    colunas = ["data", "tipo", "referente", "valor", "categoria", "mes"]
+
     if not resp.data:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=colunas)
 
     df = pd.DataFrame(resp.data)
+
+    # garante que todas as colunas existam (evita KeyError)
+    for c in colunas:
+        if c not in df.columns:
+            df[c] = None
+
     df["data"] = pd.to_datetime(df["data"], errors="coerce")
     df["valor"] = pd.to_numeric(df["valor"], errors="coerce").fillna(0)
+
     return df
 
 df = carregar()
 
-# ================= CABEÇALHO =================
-st.markdown("## 💼 Sistema Financeiro")
+# ================= FILTRO MÊS + ANO =================
+st.sidebar.subheader("📅 Filtro")
+
+if not df.empty:
+    df["ano"] = df["data"].dt.year
+    df["mes_num"] = df["data"].dt.month
+
+    anos = sorted(df["ano"].dropna().unique())
+    ano_sel = st.sidebar.selectbox("Ano", anos)
+
+    meses = {
+        1:"Janeiro",2:"Fevereiro",3:"Março",4:"Abril",
+        5:"Maio",6:"Junho",7:"Julho",8:"Agosto",
+        9:"Setembro",10:"Outubro",11:"Novembro",12:"Dezembro"
+    }
+
+    mes_sel = st.sidebar.selectbox("Mês", list(meses.values()))
+    mes_num_sel = list(meses.keys())[list(meses.values()).index(mes_sel)]
+
+    df = df[(df["ano"] == ano_sel) & (df["mes_num"] == mes_num_sel)]
+
+# ================= KPIs =================
+st.markdown("## 💳 Dashboard Financeiro")
 
 entradas = df[df["tipo"] == "Entrada"]["valor"].sum()
 saidas = df[df["tipo"] == "Saída"]["valor"].sum()
 saldo = entradas - saidas
 
 c1, c2, c3 = st.columns(3)
-c1.metric("Entradas", f"R$ {entradas:,.2f}")
-c2.metric("Saídas", f"R$ {saidas:,.2f}")
-c3.metric("Saldo", f"R$ {saldo:,.2f}")
+
+c1.metric("💚 Entradas", f"R$ {entradas:,.2f}")
+c2.metric("💸 Saídas", f"R$ {saidas:,.2f}")
+c3.metric("💜 Saldo", f"R$ {saldo:,.2f}")
 
 st.divider()
 
-# ================= TABS =================
-tab1, tab2, tab3 = st.tabs(["➕ Entradas", "➖ Saídas", "📋 Movimentações"])
+# ================= METAS =================
+st.subheader("🎯 Metas por Categoria")
 
-# ================= ENTRADAS =================
-with tab1:
-    st.subheader("Nova Entrada")
+categorias = ["Alimentação", "Transporte", "Casa", "Lazer"]
 
-    col1, col2 = st.columns(2)
+meta_categoria = {}
+for c in categorias:
+    meta_categoria[c] = st.slider(f"Meta {c}", 0, 5000, 1000)
 
-    with col1:
-        data = st.date_input("Data", date.today())
-        referencia = st.text_input("Referência")
+if not df.empty:
+    gastos_cat = df[df["tipo"] == "Saída"].groupby("categoria")["valor"].sum().reset_index()
 
-    with col2:
-        valor = st.number_input("Valor", min_value=0.0, step=0.01)
+    for c in categorias:
+        gasto = gastos_cat[gastos_cat["categoria"] == c]["valor"].sum()
+        st.write(f"**{c}**: R$ {gasto:.2f} / Meta {meta_categoria[c]}")
 
-    if st.button("Salvar Entrada"):
-        supabase.table("financeiro").insert({
-            "usuario": user,
-            "data": data.isoformat(),
-            "tipo": "Entrada",
-            "referente": referencia,
-            "valor": float(valor),
-            "categoria": None,
-            "mes": data.strftime("%m-%Y")
-        }).execute()
+st.divider()
 
-        st.success("Entrada salva")
-        st.rerun()
+# ================= EVOLUÇÃO =================
+st.subheader("📈 Evolução")
 
-# ================= SAÍDAS =================
-with tab2:
-    st.subheader("Nova Saída")
+if not df.empty:
+    mensal = df.copy()
+    mensal["mes"] = mensal["data"].dt.strftime("%Y-%m")
 
-    col1, col2 = st.columns(2)
+    evolucao = mensal.groupby(["mes", "tipo"])["valor"].sum().reset_index()
 
-    with col1:
-        data = st.date_input("Data saída", date.today())
+    fig = px.line(
+        evolucao,
+        x="mes",
+        y="valor",
+        color="tipo",
+        markers=True
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# ================= CATEGORIAS =================
+st.subheader("📊 Gastos por Categoria")
+
+if not df.empty:
+    cat = df[df["tipo"]=="Saída"].groupby("categoria")["valor"].sum().reset_index()
+
+    fig2 = px.pie(cat, names="categoria", values="valor")
+    st.plotly_chart(fig2)
+
+st.divider()
+
+# ================= FORMULÁRIO =================
+st.subheader("➕ Nova Movimentação")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    tipo = st.selectbox("Tipo", ["Entrada", "Saída"])
+    data = st.date_input("Data", date.today())
+
+    categoria = None
+    if tipo == "Saída":
         categoria = st.selectbox(
             "Categoria",
             ["Alimentação", "Transporte", "Casa", "Lazer", "Outros"]
         )
 
-    with col2:
-        referencia = st.text_input("Referência saída")
-        valor = st.number_input("Valor saída", min_value=0.0, step=0.01)
+        if categoria == "Outros":
+            categoria = st.text_input("Digite a categoria")
 
-    if st.button("Salvar Saída"):
-        supabase.table("financeiro").insert({
-            "usuario": user,
-            "data": data.isoformat(),
-            "tipo": "Saída",
-            "referente": referencia,
-            "valor": float(valor),
-            "categoria": categoria,
-            "mes": data.strftime("%m-%Y")
-        }).execute()
+with col2:
+    referente = st.text_input("Referência")
+    valor = st.number_input("Valor", min_value=0.0, step=0.01)
 
-        st.success("Saída salva")
-        st.rerun()
+if st.button("Salvar"):
+    supabase.table("financeiro").insert({
+        "usuario": user,
+        "data": data.isoformat(),
+        "tipo": tipo,
+        "referente": referente,
+        "valor": float(valor),
+        "categoria": categoria,
+        "mes": data.strftime("%Y-%m")
+    }).execute()
 
-# ================= MOVIMENTAÇÕES =================
-with tab3:
-    st.subheader("Histórico")
+    st.success("Salvo com sucesso!")
+    st.rerun()
 
-    if not df.empty:
-        df_view = df.copy()
-        df_view["data"] = df_view["data"].dt.strftime("%d/%m/%Y")
-
-        st.dataframe(
-            df_view[["data","tipo","categoria","referente","valor"]],
-            use_container_width=True
-        )
-
-# ================= GRÁFICOS =================
 st.divider()
-st.subheader("📊 Análise Geral")
+
+# ================= HISTÓRICO =================
+st.subheader("📋 Histórico")
 
 if not df.empty:
-    st.bar_chart(df.groupby("tipo")["valor"].sum())
+    view = df.copy()
+    view["data"] = view["data"].dt.strftime("%d/%m/%Y")
 
-    st.subheader("Gastos por categoria")
-    st.bar_chart(df[df["tipo"]=="Saída"].groupby("categoria")["valor"].sum())
+    st.dataframe(view, use_container_width=True)
