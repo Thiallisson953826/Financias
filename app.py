@@ -3,8 +3,6 @@ import pandas as pd
 import plotly.express as px
 from datetime import date
 from supabase import create_client
-from fpdf import FPDF
-import io
 
 st.set_page_config(page_title="Financeiro Pro", layout="wide")
 
@@ -34,24 +32,46 @@ def carregar():
         return pd.DataFrame()
 
     df = pd.DataFrame(resp.data)
-    df["data"] = pd.to_datetime(df["data"])
+    df["data"] = pd.to_datetime(df["data"], errors="coerce")
     df["valor"] = pd.to_numeric(df["valor"], errors="coerce").fillna(0)
+
     return df
 
 df = carregar()
 
-# ================= KPIs (NUBANK STYLE) =================
-st.markdown("## 💳 Painel Financeiro")
+# ================= FILTRO MÊS + ANO =================
+st.sidebar.subheader("📅 Filtro de período")
 
-entradas = df[df["tipo"]=="Entrada"]["valor"].sum()
-saidas = df[df["tipo"]=="Saída"]["valor"].sum()
+if not df.empty:
+    df["ano"] = df["data"].dt.year
+    df["mes_num"] = df["data"].dt.month
+
+    anos = sorted(df["ano"].dropna().unique())
+    ano_sel = st.sidebar.selectbox("Ano", anos)
+
+    meses = {
+        1:"Janeiro",2:"Fevereiro",3:"Março",4:"Abril",
+        5:"Maio",6:"Junho",7:"Julho",8:"Agosto",
+        9:"Setembro",10:"Outubro",11:"Novembro",12:"Dezembro"
+    }
+
+    mes_sel = st.sidebar.selectbox("Mês", list(meses.values()))
+    mes_num_sel = list(meses.keys())[list(meses.values()).index(mes_sel)]
+
+    df = df[(df["ano"] == ano_sel) & (df["mes_num"] == mes_num_sel)]
+
+# ================= KPIs =================
+st.markdown("## 💳 Dashboard Financeiro")
+
+entradas = df[df["tipo"] == "Entrada"]["valor"].sum()
+saidas = df[df["tipo"] == "Saída"]["valor"].sum()
 saldo = entradas - saidas
 
-col1, col2, col3 = st.columns(3)
+c1, c2, c3 = st.columns(3)
 
-col1.metric("💚 Entradas", f"R$ {entradas:,.2f}")
-col2.metric("💸 Saídas", f"R$ {saidas:,.2f}")
-col3.metric("💜 Saldo", f"R$ {saldo:,.2f}")
+c1.metric("💚 Entradas", f"R$ {entradas:,.2f}")
+c2.metric("💸 Saídas", f"R$ {saidas:,.2f}")
+c3.metric("💜 Saldo", f"R$ {saldo:,.2f}")
 
 st.divider()
 
@@ -65,39 +85,44 @@ for c in categorias:
     meta_categoria[c] = st.slider(f"Meta {c}", 0, 5000, 1000)
 
 if not df.empty:
-    gastos_cat = df[df["tipo"]=="Saída"].groupby("categoria")["valor"].sum().reset_index()
+    gastos_cat = df[df["tipo"] == "Saída"].groupby("categoria")["valor"].sum().reset_index()
 
     for c in categorias:
-        gasto = gastos_cat[gastos_cat["categoria"]==c]["valor"].sum()
+        gasto = gastos_cat[gastos_cat["categoria"] == c]["valor"].sum()
         st.write(f"**{c}**: R$ {gasto:.2f} / Meta {meta_categoria[c]}")
 
+st.divider()
+
 # ================= EVOLUÇÃO MENSAL =================
-st.subheader("📈 Evolução Mensal")
+st.subheader("📈 Evolução")
 
 if not df.empty:
     mensal = df.copy()
     mensal["mes"] = mensal["data"].dt.strftime("%Y-%m")
 
-    evolucao = mensal.groupby(["mes","tipo"])["valor"].sum().reset_index()
+    evolucao = mensal.groupby(["mes", "tipo"])["valor"].sum().reset_index()
 
     fig = px.line(
         evolucao,
         x="mes",
         y="valor",
         color="tipo",
-        markers=True,
-        title="Evolução Mensal"
+        markers=True
     )
     st.plotly_chart(fig, use_container_width=True)
 
-# ================= GRÁFICOS POWER BI STYLE =================
-st.subheader("📊 Análise Inteligente")
+st.divider()
+
+# ================= GRÁFICO POR CATEGORIA =================
+st.subheader("📊 Gastos por Categoria")
 
 if not df.empty:
-    cat = df[df["tipo"]=="Saída"].groupby("categoria")["valor"].sum().reset_index()
+    cat = df[df["tipo"] == "Saída"].groupby("categoria")["valor"].sum().reset_index()
 
-    fig2 = px.pie(cat, names="categoria", values="valor", title="Distribuição de Gastos")
+    fig2 = px.pie(cat, names="categoria", values="valor")
     st.plotly_chart(fig2)
+
+st.divider()
 
 # ================= FORMULÁRIO =================
 st.subheader("➕ Nova Movimentação")
@@ -110,7 +135,11 @@ with col1:
 
     categoria = None
     if tipo == "Saída":
-        categoria = st.selectbox("Categoria", categorias + ["Outros"])
+        categoria = st.selectbox(
+            "Categoria",
+            ["Alimentação", "Transporte", "Casa", "Lazer", "Outros"]
+        )
+
         if categoria == "Outros":
             categoria = st.text_input("Digite a categoria")
 
@@ -129,10 +158,12 @@ if st.button("Salvar"):
         "mes": data.strftime("%Y-%m")
     }).execute()
 
-    st.success("Salvo!")
+    st.success("Salvo com sucesso!")
     st.rerun()
 
-# ================= TABELA =================
+st.divider()
+
+# ================= HISTÓRICO =================
 st.subheader("📋 Histórico")
 
 if not df.empty:
@@ -140,28 +171,3 @@ if not df.empty:
     view["data"] = view["data"].dt.strftime("%d/%m/%Y")
 
     st.dataframe(view, use_container_width=True)
-
-# ================= EXPORTAÇÃO PDF =================
-st.subheader("📤 Exportar relatório")
-
-if not df.empty:
-    if st.button("Gerar PDF"):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-
-        pdf.cell(200, 10, txt=f"Relatório Financeiro - {user}", ln=True)
-
-        for i, row in df.iterrows():
-            texto = f"{row['data'].strftime('%d/%m/%Y')} | {row['tipo']} | {row['valor']}"
-            pdf.cell(200, 8, txt=texto, ln=True)
-
-        buffer = io.BytesIO()
-        pdf.output(buffer)
-
-        st.download_button(
-            "Baixar PDF",
-            data=buffer.getvalue(),
-            file_name="relatorio.pdf",
-            mime="application/pdf"
-        )
