@@ -1,9 +1,12 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 from datetime import date
 from supabase import create_client
+from fpdf import FPDF
+import io
 
-st.set_page_config(page_title="Dashboard Financeiro Pro", layout="wide")
+st.set_page_config(page_title="Financeiro Pro", layout="wide")
 
 # ================= SUPABASE =================
 SUPABASE_URL = "https://nwloxhyzvijnimmtevry.supabase.co"
@@ -15,132 +18,150 @@ if "user" not in st.session_state:
     st.title("🔐 Acesso ao Sistema")
     user = st.text_input("Digite seu nome")
     if st.button("Entrar"):
-        if user.strip() == "":
-            st.warning("Informe um nome")
-        else:
+        if user.strip():
             st.session_state.user = user
             st.rerun()
+        else:
+            st.warning("Informe um nome")
     st.stop()
 
 user = st.session_state.user
-st.sidebar.success(f"Usuário: {user}")
 
-# ================= CARREGAR DADOS =================
-def carregar_dados():
+# ================= DADOS =================
+def carregar():
     resp = supabase.table("financeiro").select("*").eq("usuario", user).execute()
-
     if not resp.data:
-        return pd.DataFrame(columns=["data","tipo","referente","valor","categoria","mes"])
+        return pd.DataFrame()
 
     df = pd.DataFrame(resp.data)
-
-    df["data"] = pd.to_datetime(df["data"], errors="coerce")
+    df["data"] = pd.to_datetime(df["data"])
     df["valor"] = pd.to_numeric(df["valor"], errors="coerce").fillna(0)
-
     return df
 
-df = carregar_dados()
+df = carregar()
 
-# ================= GASTO DO MÊS (AUTOMÁTICO) =================
-gasto_mes = df[df["tipo"] == "Saída"]["valor"].sum()
+# ================= KPIs (NUBANK STYLE) =================
+st.markdown("## 💳 Painel Financeiro")
 
-# ================= KPIs =================
-st.title("📊 Dashboard Financeiro")
-
-entradas = df[df["tipo"] == "Entrada"]["valor"].sum()
-saidas = gasto_mes
+entradas = df[df["tipo"]=="Entrada"]["valor"].sum()
+saidas = df[df["tipo"]=="Saída"]["valor"].sum()
 saldo = entradas - saidas
 
 col1, col2, col3 = st.columns(3)
 
-col1.metric("💰 Entradas", f"R$ {entradas:,.2f}")
-col2.metric("💸 Gasto do mês", f"R$ {gasto_mes:,.2f}")
-col3.metric("📌 Saldo", f"R$ {saldo:,.2f}")
+col1.metric("💚 Entradas", f"R$ {entradas:,.2f}")
+col2.metric("💸 Saídas", f"R$ {saidas:,.2f}")
+col3.metric("💜 Saldo", f"R$ {saldo:,.2f}")
 
-# ================= ALERTAS =================
 st.divider()
 
-limite = 1000  # limite fixo (depois posso deixar por usuário)
+# ================= METAS POR CATEGORIA =================
+st.subheader("🎯 Metas por Categoria")
 
-if gasto_mes > limite:
-    st.error("⚠️ Você ultrapassou o limite de gastos do mês!")
-elif gasto_mes > limite * 0.8:
-    st.warning("⚠️ Você já usou mais de 80% do limite")
-else:
-    st.success("✔️ Dentro do limite mensal")
+categorias = ["Alimentação", "Transporte", "Casa", "Lazer"]
 
-st.progress(min(gasto_mes / limite, 1.0))
+meta_categoria = {}
+for c in categorias:
+    meta_categoria[c] = st.slider(f"Meta {c}", 0, 5000, 1000)
+
+if not df.empty:
+    gastos_cat = df[df["tipo"]=="Saída"].groupby("categoria")["valor"].sum().reset_index()
+
+    for c in categorias:
+        gasto = gastos_cat[gastos_cat["categoria"]==c]["valor"].sum()
+        st.write(f"**{c}**: R$ {gasto:.2f} / Meta {meta_categoria[c]}")
+
+# ================= EVOLUÇÃO MENSAL =================
+st.subheader("📈 Evolução Mensal")
+
+if not df.empty:
+    mensal = df.copy()
+    mensal["mes"] = mensal["data"].dt.strftime("%Y-%m")
+
+    evolucao = mensal.groupby(["mes","tipo"])["valor"].sum().reset_index()
+
+    fig = px.line(
+        evolucao,
+        x="mes",
+        y="valor",
+        color="tipo",
+        markers=True,
+        title="Evolução Mensal"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# ================= GRÁFICOS POWER BI STYLE =================
+st.subheader("📊 Análise Inteligente")
+
+if not df.empty:
+    cat = df[df["tipo"]=="Saída"].groupby("categoria")["valor"].sum().reset_index()
+
+    fig2 = px.pie(cat, names="categoria", values="valor", title="Distribuição de Gastos")
+    st.plotly_chart(fig2)
 
 # ================= FORMULÁRIO =================
-st.subheader("➕ Nova movimentação")
+st.subheader("➕ Nova Movimentação")
 
 col1, col2 = st.columns(2)
 
 with col1:
     tipo = st.selectbox("Tipo", ["Entrada", "Saída"])
-    data_mov = st.date_input("Data", date.today())
+    data = st.date_input("Data", date.today())
 
-    categoria_padrao = st.selectbox(
-        "Categoria",
-        ["Alimentação", "Transporte", "Casa", "Lazer", "Outros"]
-    )
-
-    if categoria_padrao == "Outros":
-        categoria = st.text_input("Digite a categoria")
-    else:
-        categoria = categoria_padrao
+    categoria = None
+    if tipo == "Saída":
+        categoria = st.selectbox("Categoria", categorias + ["Outros"])
+        if categoria == "Outros":
+            categoria = st.text_input("Digite a categoria")
 
 with col2:
-    referente = st.text_input("Referente")
+    referente = st.text_input("Referência")
     valor = st.number_input("Valor", min_value=0.0, step=0.01)
 
 if st.button("Salvar"):
     supabase.table("financeiro").insert({
         "usuario": user,
-        "data": data_mov.isoformat(),
+        "data": data.isoformat(),
         "tipo": tipo,
         "referente": referente,
         "valor": float(valor),
         "categoria": categoria,
-        "mes": data_mov.strftime("%m-%Y")
+        "mes": data.strftime("%Y-%m")
     }).execute()
 
-    st.success("Salvo com sucesso!")
+    st.success("Salvo!")
     st.rerun()
 
-# ================= FILTRO =================
-if not df.empty:
-    meses = sorted(df["mes"].dropna().unique())
-    mes_sel = st.selectbox("Filtrar mês", ["Todos"] + meses)
-
-    if mes_sel != "Todos":
-        df = df[df["mes"] == mes_sel]
-
 # ================= TABELA =================
-st.subheader("📋 Movimentações")
+st.subheader("📋 Histórico")
 
 if not df.empty:
-    df_view = df.copy()
-    df_view["data"] = df_view["data"].dt.strftime("%d/%m/%Y")
+    view = df.copy()
+    view["data"] = view["data"].dt.strftime("%d/%m/%Y")
 
-    st.dataframe(
-        df_view[["data","tipo","categoria","referente","valor"]],
-        use_container_width=True
-    )
+    st.dataframe(view, use_container_width=True)
 
-# ================= GRÁFICOS =================
-st.subheader("📈 Análises")
+# ================= EXPORTAÇÃO PDF =================
+st.subheader("📤 Exportar relatório")
 
 if not df.empty:
-    st.bar_chart(df.groupby("tipo")["valor"].sum())
+    if st.button("Gerar PDF"):
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
 
-    st.subheader("Gastos por categoria")
-    st.bar_chart(df[df["tipo"]=="Saída"].groupby("categoria")["valor"].sum())
+        pdf.cell(200, 10, txt=f"Relatório Financeiro - {user}", ln=True)
 
-    df_sorted = df.sort_values("data")
-    df_sorted["fluxo"] = df_sorted.apply(
-        lambda x: x["valor"] if x["tipo"] == "Entrada" else -x["valor"],
-        axis=1
-    ).cumsum()
+        for i, row in df.iterrows():
+            texto = f"{row['data'].strftime('%d/%m/%Y')} | {row['tipo']} | {row['valor']}"
+            pdf.cell(200, 8, txt=texto, ln=True)
 
-    st.line_chart(df_sorted.set_index("data")["fluxo"])
+        buffer = io.BytesIO()
+        pdf.output(buffer)
+
+        st.download_button(
+            "Baixar PDF",
+            data=buffer.getvalue(),
+            file_name="relatorio.pdf",
+            mime="application/pdf"
+        )
